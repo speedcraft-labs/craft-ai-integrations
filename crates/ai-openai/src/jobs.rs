@@ -10,7 +10,7 @@
 //! not streamed cannot be interrupted mid-flight, so its worker finishes and is discarded; the
 //! request timeout bounds how long that takes.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -20,7 +20,7 @@ use craft_ai_core::{AiError, ErrorKind, JobId, Usage};
 use crate::chat::{self, ChatPlan};
 use crate::http::Http;
 use crate::images::{self, ImagePlan};
-use crate::stream::{MAX_SSE_LINE, SseState};
+use crate::stream::SseState;
 
 /// Finished jobs kept for polling before the oldest are forgotten.
 const KEEP_FINISHED: usize = 64;
@@ -239,12 +239,9 @@ fn run_chat(http: &Http, cell: &JobCell, p: &ChatPlan) -> Result<Option<Usage>, 
         }
         return Ok(completion.usage);
     }
-    let mut reader = BufReader::new(resp.into_body().into_reader());
+    let mut reader = resp.into_body().into_reader();
     let mut state = SseState::default();
-    let mut line = Vec::new();
-    let cap = u64::try_from(MAX_SSE_LINE)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
+    let mut chunk = [0u8; 8192];
     loop {
         // Dropping the reader on return closes the connection, which stops the server's work.
         // Mid-stream a terminal cell means the job was cancelled, or its event backlog grew
@@ -252,30 +249,22 @@ fn run_chat(http: &Http, cell: &JobCell, p: &ChatPlan) -> Result<Option<Usage>, 
         if cell.is_terminal() {
             return Ok(None);
         }
-        line.clear();
-        let n = (&mut reader)
-            .take(cap)
-            .read_until(b'\n', &mut line)
-            .map_err(|_| {
-                AiError::new(ErrorKind::Network, "the connection broke while streaming")
-            })?;
+        let n = reader.read(&mut chunk).map_err(|_| {
+            AiError::new(ErrorKind::Network, "the connection broke while streaming")
+        })?;
         if n == 0 {
             break;
         }
-        if line.len() > MAX_SSE_LINE {
-            return Err(AiError::new(
-                ErrorKind::Provider,
-                "the stream held a line that is too long",
-            ));
-        }
-        let delta = state.line(&String::from_utf8_lossy(&line))?;
-        if let Some(text) = delta.filter(|_| !p.structured) {
-            cell.push(Event::TextDelta { text });
+        for text in state.feed(&chunk[..n])? {
+            if !p.structured {
+                cell.push(Event::TextDelta { text });
+            }
         }
         if state.done {
             break;
         }
     }
+    state.finish()?;
     if !state.done && !state.finished {
         return Err(AiError::new(
             ErrorKind::Network,

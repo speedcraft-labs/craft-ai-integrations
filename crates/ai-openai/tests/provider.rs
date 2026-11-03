@@ -163,6 +163,31 @@ fn streamed_text_arrives_as_deltas_and_passes_the_lifecycle() {
 }
 
 #[test]
+fn streamed_multiline_event_waits_for_the_blank_line() {
+    let server = Server::start(|_| {
+        Reply::Sse(vec![
+            Step::Send(
+                ": heartbeat\r\nevent: message\r\nid: 9\r\ndata: {\"choices\":[{\"delta\":\r\n"
+                    .into(),
+            ),
+            Step::Wait(10),
+            Step::Send("data: {\"content\":\"Hello\"}}]}\r".into()),
+            Step::Wait(10),
+            Step::Send("\n\r\n".into()),
+            Step::Send("data: [DONE]\r\n\r\n".into()),
+        ])
+    });
+    let done = lifecycle(
+        &provider(&server.url),
+        &model("gpt-4o"),
+        &text_req().streaming(),
+    )
+    .unwrap();
+    assert_eq!(done.state, JobState::Succeeded);
+    assert_eq!(texts(&done.events), ["Hello"]);
+}
+
+#[test]
 fn streamed_tool_call_arrives_whole() {
     let server = Server::start(|_| {
         Reply::Sse(vec![
