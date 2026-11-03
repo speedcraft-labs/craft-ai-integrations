@@ -341,6 +341,21 @@ fn http_failures_map_to_kinds_and_never_echo_the_key() {
 }
 
 #[test]
+fn http_date_retry_after_is_preserved_for_rate_limits_and_unavailable_hosts() {
+    for status in [429, 503] {
+        let server = Server::start(move |_| {
+            Reply::JsonWith(
+                status,
+                vec![("Retry-After", "Sat, 06 Nov 2094 08:49:50 GMT".into())],
+                "{}".into(),
+            )
+        });
+        let done = lifecycle(&provider(&server.url), &model("gpt-4o"), &text_req()).unwrap();
+        assert_eq!(failed(&done.state).retry_after_secs, Some(86400));
+    }
+}
+
+#[test]
 fn unreachable_server_is_a_network_error() {
     let done = lifecycle(
         &provider(&Server::dead_url()),

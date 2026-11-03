@@ -219,6 +219,23 @@ fn a_host_that_asks_for_a_long_wait_is_not_waited_for() {
 }
 
 #[test]
+fn http_date_cooldown_applies_to_busy_and_rate_limited_hosts() {
+    for status in [429, 503] {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::start(move |_| {
+            http_bytes(
+                status,
+                &[("Retry-After", "Sat, 06 Nov 2094 08:49:50 GMT")],
+                b"",
+            )
+        });
+        let error = save(config(dir.path()), &server).unwrap_err();
+        assert_eq!(server.count(), 1, "{status}: no retry beyond the budget");
+        assert_eq!(error.retry_after_secs, Some(86400));
+    }
+}
+
+#[test]
 fn every_try_goes_to_the_same_link_with_no_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let server = busy_then_ok(2, || http_bytes(503, &[], b""));

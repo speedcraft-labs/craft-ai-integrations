@@ -21,7 +21,7 @@ use crate::url_rules;
 use craft_ai_core::{AiError, ErrorKind, MediaType, Payload, PayloadHandle};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use url::Url;
 
 /// How and where media is saved.
@@ -183,10 +183,14 @@ impl MediaStore {
                 });
             }
             if matches!(status, 408 | 500 | 502 | 503 | 504) {
-                return Err(AiError::new(
+                let error = AiError::new(
                     ErrorKind::Network,
                     format!("the media host answered {status}"),
-                ));
+                );
+                return Err(match retry_after(&response) {
+                    Some(secs) => error.with_retry_after(secs),
+                    None => error,
+                });
             }
             if !(200..300).contains(&status) {
                 return Err(AiError::new(
@@ -261,13 +265,14 @@ impl MediaStore {
     }
 }
 
-/// Seconds from a `Retry-After` header. A date form is ignored, so the normal pause applies.
+/// Whole seconds, rounded up so the retry does not precede the server's date.
 fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Option<u64> {
     response
         .headers()
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<u64>().ok())
+        .and_then(|header| craft_ai_http::parse_retry_after(header, SystemTime::now()))
+        .map(|duration| duration.as_secs() + u64::from(duration.subsec_nanos() > 0))
 }
 
 /// The final error, saying how many tries were made when there was more than one.

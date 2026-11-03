@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 craft-ai-core.workspace = true
+chrono.workspace = true
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
 
 [lints]

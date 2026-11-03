@@ -7,7 +7,7 @@
 //! - **Error text is redacted** with the key before it leaves this module, and capped in length.
 
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use craft_ai_core::secret::redact;
 use craft_ai_core::{AiError, ErrorKind, SecretString, Usage};
@@ -142,7 +142,8 @@ impl Http {
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok());
+            .and_then(|header| craft_ai_http::parse_retry_after(header, SystemTime::now()))
+            .map(|duration| duration.as_secs() + u64::from(duration.subsec_nanos() > 0));
         let body = read_capped(resp.into_body().into_reader(), MAX_ERROR_BODY).unwrap_or_default();
         map_status(
             status,
@@ -255,7 +256,7 @@ pub(crate) fn map_status(
         format!("the server answered {status}: {upstream}")
     };
     let mut e = scrub(AiError::new(kind, message), key);
-    if kind == ErrorKind::RateLimited {
+    if kind == ErrorKind::RateLimited || status == 503 {
         e.retry_after_secs = retry_after;
     }
     e

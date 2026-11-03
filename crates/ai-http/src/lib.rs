@@ -26,6 +26,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use craft_ai_core::endpoint::Endpoint;
+use std::time::{Duration, SystemTime};
 use ureq::Proxy;
 use ureq::tls::{RootCerts, TlsConfig};
 
@@ -73,9 +74,72 @@ pub fn proxy_for(base: &str) -> Option<Proxy> {
     }
 }
 
+/// Converts a Retry-After delay or IMF-fixdate to a bounded wait at the supplied time.
+pub fn parse_retry_after(header: &str, now: SystemTime) -> Option<Duration> {
+    const MAX_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+    let value = header.trim();
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Some(Duration::from_secs(value.parse::<u64>().unwrap_or(u64::MAX)).min(MAX_WAIT));
+    }
+    let date = chrono::NaiveDateTime::parse_from_str(value, "%a, %d %b %Y %H:%M:%S GMT").ok()?;
+    if date.format("%a, %d %b %Y %H:%M:%S GMT").to_string() != value {
+        return None;
+    }
+    Some(
+        date.and_utc()
+            .signed_duration_since(chrono::DateTime::<chrono::Utc>::from(now))
+            .to_std()
+            .unwrap_or(Duration::ZERO)
+            .min(MAX_WAIT),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn retry_after_accepts_seconds_and_imf_fixdates() {
+        let now = UNIX_EPOCH + Duration::from_secs(784_111_770);
+        assert_eq!(
+            parse_retry_after(" 12 ", now),
+            Some(Duration::from_secs(12))
+        );
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:50 GMT", now),
+            Some(Duration::from_secs(20))
+        );
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:30 GMT", now),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            parse_retry_after("86401", now),
+            Some(Duration::from_secs(86400))
+        );
+        assert_eq!(
+            parse_retry_after("999999999999999999999999999", now),
+            Some(Duration::from_secs(86400))
+        );
+    }
+
+    #[test]
+    fn retry_after_refuses_garbage_and_noncanonical_dates() {
+        let now = UNIX_EPOCH;
+        for header in [
+            "",
+            "-1",
+            "+1",
+            "1.5",
+            "tomorrow",
+            "Sun, 06 Nov 1994 08:49:50 UTC",
+            "Sun, 32 Nov 1994 08:49:50 GMT",
+            "Mon, 06 Nov 1994 08:49:50 GMT",
+        ] {
+            assert_eq!(parse_retry_after(header, now), None, "{header}");
+        }
+    }
 
     #[test]
     fn certificates_are_checked_by_the_platform() {

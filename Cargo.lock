@@ -2166,6 +2166,7 @@ dependencies = [
 name = "craft-ai-http"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "craft-ai-core",
  "ureq 3.4.2",
 ]
