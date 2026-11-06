@@ -1,7 +1,7 @@
 name: Hosted CI
 on:
   push:
-    branches: [algo/ci]
+    branches: [main, algo/ci]
   workflow_dispatch:
 permissions:
   contents: read
