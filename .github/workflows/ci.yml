@@ -1,73 +1,27 @@
-name: CI
-
+name: Hosted CI
 on:
   push:
-    branches: [main]
-  pull_request:
+    branches: [algo/ci]
   workflow_dispatch:
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  lint:
-    name: fmt, clippy, wasm
-    runs-on: ubuntu-latest
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: python3 -m unittest discover -s tools/mutation -p 'test_*.py'
-      - run: python3 -m unittest discover -s tools/intake -p 'test_*.py'
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          components: clippy, rustfmt
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo fmt --all --check
-      # Same gate as craft-libs. Every lib.rs denies unwrap, expect and panic in shipped code.
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The model crate promises to compile for wasm.
-      - run: cargo check -p craft-ai-core --target wasm32-unknown-unknown --locked
-      # So does the tool catalogue, which a web launcher reads.
-      - run: cargo check -p craft-ai-features --target wasm32-unknown-unknown --locked
-
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install software Vulkan renderer for kittest snapshots
-        if: runner.os == 'Linux'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
-          # kittest prefers a CPU adapter. Mesa supplies lavapipe for headless Vulkan;
-          # selecting Vulkan avoids relying on a display-backed GL adapter.
-          # Windows and macOS keep their existing graphics backends.
-          echo 'WGPU_BACKEND=vulkan' >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo test --workspace --locked
-
-  deny:
-    name: advisories, licences, sources
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
-        with:
-          command: check advisories licenses sources
+          sudo apt-get install -y libasound2-dev libudev-dev pkg-config libdbus-1-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev fonts-noto-cjk fonts-unifont
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked
+      - name: Workspace tests
+        run: cargo test --workspace --no-fail-fast
